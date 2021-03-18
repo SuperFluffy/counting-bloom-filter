@@ -16,18 +16,30 @@ use std::{
 /// Returns the optimal number of bags for a given false positive `rate` and a number of
 /// `n_expected_items`.
 pub fn optimal_num_bags(false_positive_rate: f64, n_expected_items: usize) -> usize {
+    optimal_num_bags_f64(false_positive_rate, n_expected_items as f64) as usize
+}
+
+/// Returns the optimal number of bags for a given false positive `rate` and a number of
+/// `n_expected_items`.
+pub fn optimal_num_bags_f64(false_positive_rate: f64, n_expected_items: f64) -> f64 {
     assert!(false_positive_rate > 0.0);
     assert!(false_positive_rate < 1.0);
     use std::f64::consts::LN_2;
     f64::ceil(
-        n_expected_items as f64 * f64::ln(1.0 / false_positive_rate) / LN_2.powi(2)
-    ) as usize
+        n_expected_items * f64::ln(1.0 / false_positive_rate) / LN_2.powi(2)
+    )
 }
 
 /// Returns the optimal number of hash functions for a given number of `n_bags` and a number of
 /// `n_expected_items`.
 pub fn optimal_num_hash_functions(n_bags: usize, n_expected_items: usize) -> u64 {
-    f64::ceil((n_bags / n_expected_items) as f64 * std::f64::consts::LN_2) as u64
+    optimal_num_hash_functions_f64(n_bags as f64, n_expected_items as f64) as u64
+}
+
+/// Returns the optimal number of hash functions for a given number of `n_bags` and a number of
+/// `n_expected_items`.
+pub fn optimal_num_hash_functions_f64(n_bags: f64, n_expected_items: f64) -> f64 {
+    f64::ceil((n_bags / n_expected_items) * std::f64::consts::LN_2)
 }
 
 pub struct CountingBloomFilter<T> {
