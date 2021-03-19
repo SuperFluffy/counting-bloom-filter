@@ -1,12 +1,12 @@
 use bitvec::prelude::*;
 use fasthash::{
-    RandomState,
+    FastHasher as _,
+    Seed,
     murmur3,
     xx,
 };
 use std::{
     hash::{
-        BuildHasher as _,
         Hash,
         Hasher as _,
     },
@@ -41,14 +41,17 @@ pub fn optimal_num_hash_functions_f64(n_bags: f64, n_expected_items: f64) -> f64
     f64::ceil((n_bags / n_expected_items) * std::f64::consts::LN_2)
 }
 
+#[derive(Clone)]
 pub struct CountingBloomFilter {
     bitmap: BitVec,
     n_bags: usize,
     n_hash_functions: u64,
     n_count_bits: u8,
     max_count: u8,
-    murmur_hasher: RandomState<murmur3::Hash128_x64>,
-    xx_hasher: RandomState<xx::Hash64>,
+    murmur_hasher: murmur3::Hasher128_x64,
+    murmur_seed: u32,
+    xx_hasher: xx::Hasher64,
+    xx_seed: u64,
 }
 
 impl CountingBloomFilter {
@@ -61,6 +64,8 @@ impl CountingBloomFilter {
             n_bags: None,
             n_hash_functions: None,
             n_count_bits: None,
+            murmur_seed: None,
+            xx_seed: None,
         }
     }
 
@@ -79,17 +84,14 @@ impl CountingBloomFilter {
 
 impl CountingBloomFilter {
     /// Check if `item` has been inserted into the bloom filter.
-    pub fn contains<T: Hash>(&self, item: &T) -> bool {
-        let mut murmur_hasher = self.murmur_hasher.build_hasher();
-        let mut xx_hasher = self.xx_hasher.build_hasher();
-
+    pub fn contains<T: Hash>(&mut self, item: &T) -> bool {
         let murmur_hash = {
-            item.hash(&mut murmur_hasher);
-            murmur_hasher.finish()
+            item.hash(&mut self.murmur_hasher);
+            self.murmur_hasher.finish()
         };
         let xx_hash = {
-            item.hash(&mut xx_hasher);
-            xx_hasher.finish()
+            item.hash(&mut self.xx_hasher);
+            self.xx_hasher.finish()
         };
 
         let mut contained = true;
@@ -107,17 +109,14 @@ impl CountingBloomFilter {
 
     /// Returns an uper bound on the number of times `item` was inserted into the counting bloom
     /// filter.
-    pub fn estimate_count<T: Hash>(&self, item: &T) -> u8 {
-        let mut murmur_hasher = self.murmur_hasher.build_hasher();
-        let mut xx_hasher = self.xx_hasher.build_hasher();
-
+    pub fn estimate_count<T: Hash>(&mut self, item: &T) -> u8 {
         let murmur_hash = {
-            item.hash(&mut murmur_hasher);
-            murmur_hasher.finish()
+            item.hash(&mut self.murmur_hasher);
+            self.murmur_hasher.finish()
         };
         let xx_hash = {
-            item.hash(&mut xx_hasher);
-            xx_hasher.finish()
+            item.hash(&mut self.xx_hasher);
+            self.xx_hasher.finish()
         };
 
         let mut estimate = self.max_count;
@@ -137,21 +136,18 @@ impl CountingBloomFilter {
     /// Inserts `item` into the counting bloom filter, incrementing the buckets it is placed by
     /// one, up to the threshold `max_count`.
     pub fn insert<T: Hash>(&mut self, item: &T) {
-        let mut murmur_hasher = self.murmur_hasher.build_hasher();
-        let mut xx_hasher = self.xx_hasher.build_hasher();
-
         // Murmur3 only has 32 and 128 bit versions. The implementation used here truncates the the
         // resulting u128 to a u64, which seems to be acceptable for non-cryptographic hash
         // functions:
         //
         // https://stackoverflow.com/questions/11475423/is-any-64-bit-portion-of-a-128-bit-hash-as-collision-proof-as-a-64-bit-hash
         let murmur_hash = {
-            item.hash(&mut murmur_hasher);
-            murmur_hasher.finish()
+            item.hash(&mut self.murmur_hasher);
+            self.murmur_hasher.finish()
         };
         let xx_hash = {
-            item.hash(&mut xx_hasher);
-            xx_hasher.finish()
+            item.hash(&mut self.xx_hasher);
+            self.xx_hasher.finish()
         };
 
         for i in 0..self.n_hash_functions {
@@ -172,12 +168,57 @@ impl CountingBloomFilter {
             }
         }
     }
+
+    /// Merge two counting bloom filters by adding their bags up to the max threshold.
+    ///
+    /// Returns an error if any of `n_bags`, `n_hash_functions`, `n_count_bits`, `max_count`,
+    /// `murmur_seed` or `xx_seed` don't match.
+    pub fn merge(&mut self, other: &Self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.n_bags != other.n_bags {
+            Err("number of bags don't match between counting bloom filters")?;
+        }
+        if self.n_hash_functions != other.n_hash_functions {
+            Err("number of hash functions don't match between counting bloom filters")?;
+        }
+        if self.n_count_bits != other.n_count_bits {
+            Err("number of count bits don't match between counting bloom filters")?;
+        }
+        if self.max_count != other.max_count {
+            Err("max counts don't match between counting bloom filters")?;
+        }
+        if self.murmur_seed != other.murmur_seed {
+            Err("murmur seeds don't match between counting bloom filters")?;
+        }
+        if self.xx_seed != other.xx_seed {
+            Err("xx seeds don't match between counting bloom filters")?;
+        }
+        for i in 0..self.n_bags {
+            let from = i;
+            let to = i + self.n_count_bits as usize;
+            if let Some(subslice) = self.bitmap.get_mut(from..to) {
+                if let Some(other_subslice) = other.bitmap.get(from..to) {
+                    let count: u16 = subslice.load();
+                    let other_count: u16 = other_subslice.load();
+                    let new_count = count + other_count;
+                    // TODO: Attempt to replace this by a branchfree version.
+                    subslice.store(if new_count > self.max_count as u16 {
+                        self.max_count
+                    } else {
+                        new_count as u8
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 pub struct CountingBloomFilterBuilder {
     n_bags: Option<usize>,
     n_hash_functions: Option<u64>,
     n_count_bits: Option<u8>,
+    murmur_seed: Option<u32>,
+    xx_seed: Option<u64>,
 }
 
 impl CountingBloomFilterBuilder {
@@ -190,8 +231,10 @@ impl CountingBloomFilterBuilder {
             Err("n_count_bits must be at least 1 and at most 8")?;
         }
 
-        let murmur_hasher = RandomState::<murmur3::Hash128_x64>::new();
-        let xx_hasher = RandomState::<xx::Hash64>::new();
+        let murmur_seed = self.murmur_seed.unwrap_or_else(|| Seed::gen().into());
+        let murmur_hasher = murmur3::Hasher128_x64::with_seed(murmur_seed);
+        let xx_seed = self.xx_seed.unwrap_or_else(|| Seed::gen().into());
+        let xx_hasher = xx::Hasher64::with_seed(xx_seed);
 
         Ok(CountingBloomFilter {
             bitmap: BitVec::repeat(false, n_bags * n_count_bits as usize),
@@ -200,8 +243,16 @@ impl CountingBloomFilterBuilder {
             n_count_bits,
             max_count: u8::MAX >> (8 - n_count_bits),
             murmur_hasher,
+            murmur_seed,
             xx_hasher,
+            xx_seed,
         })
+    }
+
+    pub fn murmur_seed(self, murmur_seed: u32) -> Self {
+        let mut this = self;
+        this.murmur_seed.replace(murmur_seed);
+        this
     }
 
     pub fn n_bags(self, n_bags: usize) -> Self {
@@ -219,6 +270,12 @@ impl CountingBloomFilterBuilder {
     pub fn n_hash_functions(self, n_hash_functions: u64) -> Self {
         let mut this = self;
         this.n_hash_functions.replace(n_hash_functions);
+        this
+    }
+
+    pub fn xx_seed(self, xx_seed: u64) -> Self {
+        let mut this = self;
+        this.xx_seed.replace(xx_seed);
         this
     }
 }
