@@ -176,7 +176,7 @@ impl CountingBloomFilter {
     ///
     /// Returns an error if any of `n_bags`, `n_hash_functions`, `n_count_bits`, `max_count`,
     /// `murmur_seed` or `xx_seed` don't match.
-    pub fn merge(&mut self, other: &Self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn merge(&mut self, other: &Self) -> Result<(), Box<(dyn std::error::Error + Send + Sync)>> {
         if self.n_bags != other.n_bags {
             Err("number of bags don't match between counting bloom filters")?;
         }
