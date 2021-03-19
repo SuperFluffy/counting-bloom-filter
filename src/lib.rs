@@ -10,7 +10,6 @@ use std::{
         Hash,
         Hasher as _,
     },
-    marker::PhantomData,
 };
 
 /// Returns the optimal number of bags for a given false positive `rate` and a number of
@@ -42,7 +41,7 @@ pub fn optimal_num_hash_functions_f64(n_bags: f64, n_expected_items: f64) -> f64
     f64::ceil((n_bags / n_expected_items) * std::f64::consts::LN_2)
 }
 
-pub struct CountingBloomFilter<T> {
+pub struct CountingBloomFilter {
     bitmap: BitVec,
     n_bags: usize,
     n_hash_functions: u64,
@@ -50,20 +49,18 @@ pub struct CountingBloomFilter<T> {
     max_count: u8,
     murmur_hasher: RandomState<murmur3::Hash128_x64>,
     xx_hasher: RandomState<xx::Hash64>,
-    underlying: PhantomData<T>,
 }
 
-impl<T> CountingBloomFilter<T> {
+impl CountingBloomFilter {
     pub fn bitmap(&self) -> &BitVec {
         &self.bitmap
     }
 
-    pub fn builder() -> CountingBloomFilterBuilder<T> {
+    pub fn builder() -> CountingBloomFilterBuilder {
         CountingBloomFilterBuilder {
             n_bags: None,
             n_hash_functions: None,
             n_count_bits: None,
-            underlying: PhantomData,
         }
     }
 
@@ -80,9 +77,9 @@ impl<T> CountingBloomFilter<T> {
     }
 }
 
-impl<T: Hash> CountingBloomFilter<T> {
+impl CountingBloomFilter {
     /// Check if `item` has been inserted into the bloom filter.
-    pub fn contains(&self, item: &T) -> bool {
+    pub fn contains<T: Hash>(&self, item: &T) -> bool {
         let mut murmur_hasher = self.murmur_hasher.build_hasher();
         let mut xx_hasher = self.xx_hasher.build_hasher();
 
@@ -110,7 +107,7 @@ impl<T: Hash> CountingBloomFilter<T> {
 
     /// Returns an uper bound on the number of times `item` was inserted into the counting bloom
     /// filter.
-    pub fn estimate_count(&self, item: &T) -> u8 {
+    pub fn estimate_count<T: Hash>(&self, item: &T) -> u8 {
         let mut murmur_hasher = self.murmur_hasher.build_hasher();
         let mut xx_hasher = self.xx_hasher.build_hasher();
 
@@ -139,7 +136,7 @@ impl<T: Hash> CountingBloomFilter<T> {
 
     /// Inserts `item` into the counting bloom filter, incrementing the buckets it is placed by
     /// one, up to the threshold `max_count`.
-    pub fn insert(&mut self, item: &T) {
+    pub fn insert<T: Hash>(&mut self, item: &T) {
         let mut murmur_hasher = self.murmur_hasher.build_hasher();
         let mut xx_hasher = self.xx_hasher.build_hasher();
 
@@ -177,15 +174,14 @@ impl<T: Hash> CountingBloomFilter<T> {
     }
 }
 
-pub struct CountingBloomFilterBuilder<T> {
+pub struct CountingBloomFilterBuilder {
     n_bags: Option<usize>,
     n_hash_functions: Option<u64>,
     n_count_bits: Option<u8>,
-    underlying: PhantomData<T>,
 }
 
-impl<T> CountingBloomFilterBuilder<T> {
-    pub fn build(self) -> Result<CountingBloomFilter<T>, &'static str> {
+impl CountingBloomFilterBuilder {
+    pub fn build(self) -> Result<CountingBloomFilter, &'static str> {
         let n_bags = self.n_bags.ok_or("n_bags field must be set")?;
         let n_hash_functions = self.n_hash_functions.ok_or("n_hash_functions field must be set")?;
         let n_count_bits = self.n_count_bits.ok_or("n_count_bits field must be set")?;
@@ -205,7 +201,6 @@ impl<T> CountingBloomFilterBuilder<T> {
             max_count: u8::MAX >> (8 - n_count_bits),
             murmur_hasher,
             xx_hasher,
-            underlying: PhantomData,
         })
     }
 
