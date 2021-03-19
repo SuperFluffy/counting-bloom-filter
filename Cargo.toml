@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 bitvec = "0.21.0"
 fasthash = { version = "0.4.1", git = "https://github.com/flier/rust-fasthash" }
+twox-hash = "1.6.0"

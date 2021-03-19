@@ -3,7 +3,6 @@ use fasthash::{
     FastHasher as _,
     Seed,
     murmur3,
-    xx,
 };
 use std::{
     hash::{
@@ -48,9 +47,7 @@ pub struct CountingBloomFilter {
     n_hash_functions: u64,
     n_count_bits: u8,
     max_count: u8,
-    murmur_hasher: murmur3::Hasher128_x64,
     murmur_seed: u32,
-    xx_hasher: xx::Hasher64,
     xx_seed: u64,
 }
 
@@ -85,13 +82,15 @@ impl CountingBloomFilter {
 impl CountingBloomFilter {
     /// Check if `item` has been inserted into the bloom filter.
     pub fn contains<T: Hash>(&mut self, item: &T) -> bool {
+        let mut murmur_hasher = murmur3::Hasher128_x64::with_seed(self.murmur_seed);
         let murmur_hash = {
-            item.hash(&mut self.murmur_hasher);
-            self.murmur_hasher.finish()
+            item.hash(&mut murmur_hasher);
+            murmur_hasher.finish()
         };
+        let mut xx_hasher = twox_hash::XxHash64::with_seed(self.xx_seed);
         let xx_hash = {
-            item.hash(&mut self.xx_hasher);
-            self.xx_hasher.finish()
+            item.hash(&mut xx_hasher);
+            xx_hasher.finish()
         };
 
         let mut contained = true;
@@ -110,13 +109,15 @@ impl CountingBloomFilter {
     /// Returns an uper bound on the number of times `item` was inserted into the counting bloom
     /// filter.
     pub fn estimate_count<T: Hash>(&mut self, item: &T) -> u8 {
+        let mut murmur_hasher = murmur3::Hasher128_x64::with_seed(self.murmur_seed);
         let murmur_hash = {
-            item.hash(&mut self.murmur_hasher);
-            self.murmur_hasher.finish()
+            item.hash(&mut murmur_hasher);
+            murmur_hasher.finish()
         };
+        let mut xx_hasher = twox_hash::XxHash64::with_seed(self.xx_seed);
         let xx_hash = {
-            item.hash(&mut self.xx_hasher);
-            self.xx_hasher.finish()
+            item.hash(&mut xx_hasher);
+            xx_hasher.finish()
         };
 
         let mut estimate = self.max_count;
@@ -141,13 +142,15 @@ impl CountingBloomFilter {
         // functions:
         //
         // https://stackoverflow.com/questions/11475423/is-any-64-bit-portion-of-a-128-bit-hash-as-collision-proof-as-a-64-bit-hash
+        let mut murmur_hasher = murmur3::Hasher128_x64::with_seed(self.murmur_seed);
         let murmur_hash = {
-            item.hash(&mut self.murmur_hasher);
-            self.murmur_hasher.finish()
+            item.hash(&mut murmur_hasher);
+            murmur_hasher.finish()
         };
+        let mut xx_hasher = twox_hash::XxHash64::with_seed(self.xx_seed);
         let xx_hash = {
-            item.hash(&mut self.xx_hasher);
-            self.xx_hasher.finish()
+            item.hash(&mut xx_hasher);
+            xx_hasher.finish()
         };
 
         for i in 0..self.n_hash_functions {
@@ -232,9 +235,7 @@ impl CountingBloomFilterBuilder {
         }
 
         let murmur_seed = self.murmur_seed.unwrap_or_else(|| Seed::gen().into());
-        let murmur_hasher = murmur3::Hasher128_x64::with_seed(murmur_seed);
         let xx_seed = self.xx_seed.unwrap_or_else(|| Seed::gen().into());
-        let xx_hasher = xx::Hasher64::with_seed(xx_seed);
 
         Ok(CountingBloomFilter {
             bitmap: BitVec::repeat(false, n_bags * n_count_bits as usize),
@@ -242,9 +243,7 @@ impl CountingBloomFilterBuilder {
             n_hash_functions,
             n_count_bits,
             max_count: u8::MAX >> (8 - n_count_bits),
-            murmur_hasher,
             murmur_seed,
-            xx_hasher,
             xx_seed,
         })
     }
@@ -305,7 +304,7 @@ mod tests {
         let n_expected_items = 100;
         let n_bags = optimal_num_bags(0.01, n_expected_items);
         let n_hash_functions = optimal_num_hash_functions(n_bags, n_expected_items);
-        let mut filter: CountingBloomFilter<u32> = CountingBloomFilter::builder()
+        let mut filter = CountingBloomFilter::builder()
             .n_bags(n_bags)
             .n_count_bits(6)
             .n_hash_functions(n_hash_functions)
@@ -320,7 +319,7 @@ mod tests {
         let n_expected_items = 100;
         let n_bags = optimal_num_bags(0.01, n_expected_items);
         let n_hash_functions = optimal_num_hash_functions(n_bags, n_expected_items);
-        let filter: CountingBloomFilter<u32> = CountingBloomFilter::builder()
+        let mut filter = CountingBloomFilter::builder()
             .n_bags(n_bags)
             .n_count_bits(6)
             .n_hash_functions(n_hash_functions)
@@ -334,7 +333,7 @@ mod tests {
         let n_expected_items = 100;
         let n_bags = optimal_num_bags(0.01, n_expected_items);
         let n_hash_functions = optimal_num_hash_functions(n_bags, n_expected_items);
-        let filter: CountingBloomFilter<u32> = CountingBloomFilter::builder()
+        let mut filter = CountingBloomFilter::builder()
             .n_bags(n_bags)
             .n_count_bits(6)
             .n_hash_functions(n_hash_functions)
@@ -348,7 +347,7 @@ mod tests {
         let n_expected_items = 100;
         let n_bags = optimal_num_bags(0.01, n_expected_items);
         let n_hash_functions = optimal_num_hash_functions(n_bags, n_expected_items);
-        let mut filter: CountingBloomFilter<u32> = CountingBloomFilter::builder()
+        let mut filter = CountingBloomFilter::builder()
             .n_bags(n_bags)
             .n_count_bits(6)
             .n_hash_functions(n_hash_functions)
@@ -365,7 +364,7 @@ mod tests {
         let n_bags = optimal_num_bags(0.01, n_expected_items);
         let n_hash_functions = optimal_num_hash_functions(n_bags, n_expected_items);
         let n_count_bits = 6;
-        let mut filter: CountingBloomFilter<u32> = CountingBloomFilter::builder()
+        let mut filter = CountingBloomFilter::builder()
             .n_bags(n_bags)
             .n_count_bits(n_count_bits)
             .n_hash_functions(n_hash_functions)
