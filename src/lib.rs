@@ -5,6 +5,7 @@ use fasthash::{
     murmur3,
 };
 use std::{
+    cmp,
     hash::{
         Hash,
         Hasher as _,
@@ -39,6 +40,89 @@ pub fn optimal_num_hash_functions(n_bags: usize, n_expected_items: usize) -> u64
 pub fn optimal_num_hash_functions_f64(n_bags: f64, n_expected_items: f64) -> f64 {
     f64::ceil((n_bags / n_expected_items) * std::f64::consts::LN_2)
 }
+
+fn calculate_bucket_range(
+    iter_idx: u64,
+    murmur_hash: u64,
+    xx_hash: u64,
+    n_bags: usize,
+    n_count_bits: u8,
+) -> std::ops::Range<usize>
+{
+    let n_count_bits = n_count_bits as usize;
+    let idx = murmur_hash
+        .wrapping_add(iter_idx.wrapping_mul(xx_hash))
+        .wrapping_add(iter_idx.pow(3)) % (n_bags as u64);
+    let bucket_idx = idx as usize * n_count_bits;
+    bucket_idx..bucket_idx + n_count_bits
+}
+
+struct BucketRanges {
+    murmur_hash: u64,
+    xx_hash: u64,
+    n_bags: usize,
+    n_count_bits: u8,
+    n_hash_functions: u64,
+    current_index: u64,
+}
+
+impl BucketRanges {
+    fn new<T: Hash>(
+        item: &T,
+        murmur_seed: u32,
+        xx_seed: u64,
+        n_bags: usize,
+        n_count_bits: u8,
+        n_hash_functions: u64,
+    ) -> Self
+    {
+        // Murmur3 only has 32 and 128 bit versions. The implementation used here truncates the the
+        // resulting u128 to a u64, which seems to be acceptable for non-cryptographic hash
+        // functions:
+        //
+        // https://stackoverflow.com/questions/11475423/is-any-64-bit-portion-of-a-128-bit-hash-as-collision-proof-as-a-64-bit-hash
+        let mut murmur_hasher = murmur3::Hasher128_x64::with_seed(murmur_seed);
+        let murmur_hash = {
+            item.hash(&mut murmur_hasher);
+            murmur_hasher.finish()
+        };
+        let mut xx_hasher = twox_hash::XxHash64::with_seed(xx_seed);
+        let xx_hash = {
+            item.hash(&mut xx_hasher);
+            xx_hasher.finish()
+        };
+
+        Self {
+            murmur_hash,
+            xx_hash,
+            n_bags,
+            n_count_bits,
+            n_hash_functions,
+            current_index: 0,
+        }
+    }
+}
+
+impl Iterator for BucketRanges {
+    type Item = std::ops::Range<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_index >= self.n_hash_functions {
+            None?;
+        }
+
+        let bucket_range = calculate_bucket_range(
+            self.current_index,
+            self.murmur_hash,
+            self.xx_hash,
+            self.n_bags,
+            self.n_count_bits,
+        );
+        self.current_index += 1;
+        Some(bucket_range)
+    }
+}
+
 
 #[derive(Clone)]
 pub struct CountingBloomFilter {
@@ -82,26 +166,21 @@ impl CountingBloomFilter {
 impl CountingBloomFilter {
     /// Check if `item` has been inserted into the bloom filter.
     pub fn contains<T: Hash>(&mut self, item: &T) -> bool {
-        let mut murmur_hasher = murmur3::Hasher128_x64::with_seed(self.murmur_seed);
-        let murmur_hash = {
-            item.hash(&mut murmur_hasher);
-            murmur_hasher.finish()
-        };
-        let mut xx_hasher = twox_hash::XxHash64::with_seed(self.xx_seed);
-        let xx_hash = {
-            item.hash(&mut xx_hasher);
-            xx_hasher.finish()
-        };
-
         let mut contained = true;
-        for i in 0..self.n_hash_functions {
-            let idx = murmur_hash
-                .wrapping_add(i.wrapping_mul(xx_hash))
-                .wrapping_add(i.pow(3)) % (self.n_bags as u64);
-            let idx = idx as usize;
-            if let Some(subslice) = self.bitmap.get(idx..(idx + self.n_count_bits as usize)) {
-                contained &= subslice.any();
-            }
+
+        for bucket_range in BucketRanges::new(
+            item,
+            self.murmur_seed,
+            self.xx_seed,
+            self.n_bags,
+            self.n_count_bits,
+            self.n_hash_functions,
+        ) {
+            let subslice = self
+                .bitmap
+                .get(bucket_range)
+                .expect("bucket has to lie in bitmap range");
+            contained &= subslice.any();
         }
         contained
     }
@@ -109,27 +188,21 @@ impl CountingBloomFilter {
     /// Returns an uper bound on the number of times `item` was inserted into the counting bloom
     /// filter.
     pub fn estimate_count<T: Hash>(&mut self, item: &T) -> u8 {
-        let mut murmur_hasher = murmur3::Hasher128_x64::with_seed(self.murmur_seed);
-        let murmur_hash = {
-            item.hash(&mut murmur_hasher);
-            murmur_hasher.finish()
-        };
-        let mut xx_hasher = twox_hash::XxHash64::with_seed(self.xx_seed);
-        let xx_hash = {
-            item.hash(&mut xx_hasher);
-            xx_hasher.finish()
-        };
-
         let mut estimate = self.max_count;
-        for i in 0..self.n_hash_functions {
-            let idx = murmur_hash
-                .wrapping_add(i.wrapping_mul(xx_hash))
-                .wrapping_add(i.pow(3)) % (self.n_bags as u64);
-            let idx = idx as usize;
-            if let Some(subslice) = self.bitmap.get(idx..(idx + self.n_count_bits as usize)) {
-                let count: u8 = subslice.load();
-                estimate = std::cmp::min(estimate, count);
-            }
+        for bucket_range in BucketRanges::new(
+            item,
+            self.murmur_seed,
+            self.xx_seed,
+            self.n_bags,
+            self.n_count_bits,
+            self.n_hash_functions,
+        ) {
+            let subslice = self
+                .bitmap
+                .get(bucket_range)
+                .expect("bucket has to lie in bitmap range");
+            let count: u8 = subslice.load();
+            estimate = std::cmp::min(estimate, count);
         }
         estimate
     }
@@ -137,38 +210,22 @@ impl CountingBloomFilter {
     /// Inserts `item` into the counting bloom filter, incrementing the buckets it is placed by
     /// one, up to the threshold `max_count`.
     pub fn insert<T: Hash>(&mut self, item: &T) {
-        // Murmur3 only has 32 and 128 bit versions. The implementation used here truncates the the
-        // resulting u128 to a u64, which seems to be acceptable for non-cryptographic hash
-        // functions:
-        //
-        // https://stackoverflow.com/questions/11475423/is-any-64-bit-portion-of-a-128-bit-hash-as-collision-proof-as-a-64-bit-hash
-        let mut murmur_hasher = murmur3::Hasher128_x64::with_seed(self.murmur_seed);
-        let murmur_hash = {
-            item.hash(&mut murmur_hasher);
-            murmur_hasher.finish()
-        };
-        let mut xx_hasher = twox_hash::XxHash64::with_seed(self.xx_seed);
-        let xx_hash = {
-            item.hash(&mut xx_hasher);
-            xx_hasher.finish()
-        };
-
-        for i in 0..self.n_hash_functions {
-            let idx = murmur_hash
-                .wrapping_add(i.wrapping_mul(xx_hash))
-                .wrapping_add(i.pow(3)) % (self.n_bags as u64);
-            let idx = idx as usize;
-            if let Some(subslice) = self.bitmap.get_mut(idx..(idx + self.n_count_bits as usize)) {
-                // NOTE: We load the subslice into a u16. Because 
-                let count: u16 = subslice.load();
-                let new_count = count + 1;
-                // TODO: Attempt to replace this by a branchfree version.
-                subslice.store(if new_count > self.max_count as u16 {
-                    self.max_count
-                } else {
-                    new_count as u8
-                });
-            }
+        for bucket_range in BucketRanges::new(
+            item,
+            self.murmur_seed,
+            self.xx_seed,
+            self.n_bags,
+            self.n_count_bits,
+            self.n_hash_functions,
+        ) {
+            let subslice = self
+                .bitmap
+                .get_mut(bucket_range)
+                .expect("bucket has to lie in bitmap range");
+            let count: u8 = subslice.load();
+            // TODO: Attempt to replace this by a branchfree version.
+            let new_count = cmp::min(self.max_count, count.saturating_add(1));
+            subslice.store(new_count);
         }
     }
 
@@ -200,15 +257,11 @@ impl CountingBloomFilter {
             let to = i + self.n_count_bits as usize;
             if let Some(subslice) = self.bitmap.get_mut(from..to) {
                 if let Some(other_subslice) = other.bitmap.get(from..to) {
-                    let count: u16 = subslice.load();
-                    let other_count: u16 = other_subslice.load();
-                    let new_count = count + other_count;
+                    let count: u8 = subslice.load();
+                    let other_count: u8 = other_subslice.load();
                     // TODO: Attempt to replace this by a branchfree version.
-                    subslice.store(if new_count > self.max_count as u16 {
-                        self.max_count
-                    } else {
-                        new_count as u8
-                    });
+                    let new_count = cmp::min(self.max_count, count.saturating_add(other_count));
+                    subslice.store(new_count);
                 }
             }
         }
@@ -370,8 +423,9 @@ mod tests {
             .n_hash_functions(n_hash_functions)
             .build()?;
         let max_count = u8::MAX >> (8 - n_count_bits);
-        for _ in 0..max_count as u16 * 2 {
+        for i in 1..max_count * 2 {
             filter.insert(&1u32);
+            assert_eq!(filter.estimate_count(&1u32), std::cmp::min(i, max_count));
         }
         assert_eq!(filter.estimate_count(&1u32), max_count);
         Ok(())
