@@ -165,7 +165,7 @@ impl CountingBloomFilter {
 
 impl CountingBloomFilter {
     /// Check if `item` has been inserted into the bloom filter.
-    pub fn contains<T: Hash>(&mut self, item: &T) -> bool {
+    pub fn contains<T: Hash>(&self, item: &T) -> bool {
         let mut contained = true;
 
         for bucket_range in BucketRanges::new(
@@ -187,7 +187,7 @@ impl CountingBloomFilter {
 
     /// Returns an uper bound on the number of times `item` was inserted into the counting bloom
     /// filter.
-    pub fn estimate_count<T: Hash>(&mut self, item: &T) -> u8 {
+    pub fn estimate_count<T: Hash>(&self, item: &T) -> u8 {
         let mut estimate = self.max_count;
         for bucket_range in BucketRanges::new(
             item,
@@ -372,7 +372,7 @@ mod tests {
         let n_expected_items = 100;
         let n_bags = optimal_num_bags(0.01, n_expected_items);
         let n_hash_functions = optimal_num_hash_functions(n_bags, n_expected_items);
-        let mut filter = CountingBloomFilter::builder()
+        let filter = CountingBloomFilter::builder()
             .n_bags(n_bags)
             .n_count_bits(6)
             .n_hash_functions(n_hash_functions)
@@ -386,7 +386,7 @@ mod tests {
         let n_expected_items = 100;
         let n_bags = optimal_num_bags(0.01, n_expected_items);
         let n_hash_functions = optimal_num_hash_functions(n_bags, n_expected_items);
-        let mut filter = CountingBloomFilter::builder()
+        let filter = CountingBloomFilter::builder()
             .n_bags(n_bags)
             .n_count_bits(6)
             .n_hash_functions(n_hash_functions)
