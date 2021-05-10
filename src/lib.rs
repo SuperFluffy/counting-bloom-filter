@@ -269,6 +269,7 @@ impl CountingBloomFilter {
     }
 }
 
+#[derive(Clone)]
 pub struct CountingBloomFilterBuilder {
     n_bags: Option<usize>,
     n_hash_functions: Option<u64>,
@@ -299,6 +300,18 @@ impl CountingBloomFilterBuilder {
             murmur_seed,
             xx_seed,
         })
+    }
+
+    pub fn generate_murmur_seed(self) -> Self {
+        let mut this = self;
+        this.murmur_seed.replace(Seed::gen().into());
+        this
+    }
+
+    pub fn generate_xx_seed(self) -> Self {
+        let mut this = self;
+        this.xx_seed.replace(Seed::gen().into());
+        this
     }
 
     pub fn murmur_seed(self, murmur_seed: u32) -> Self {
