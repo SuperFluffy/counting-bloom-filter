@@ -136,6 +136,11 @@ pub struct CountingBloomFilter {
 }
 
 impl CountingBloomFilter {
+    /// Clears the filter, setting all bits to zero.
+    pub fn clear(&mut self) {
+        self.bitmap.set_all(false);
+    }
+
     pub fn bitmap(&self) -> &BitVec {
         &self.bitmap
     }
